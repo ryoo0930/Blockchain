@@ -18,7 +18,7 @@ public class App {
         Node node = new Node(port);
         node.startServer();
 
-        System.out.println("Type 'connect <host> <port>', 'exit', or a message to broadcast:");
+        System.out.println("Type 'connect <host> <port>', 'send <PublicKey> <message>', or 'exit'");
         String input;
         while((input = consoleReader.readLine()) != null) {
             if("exit".equalsIgnoreCase(input)) {

@@ -51,7 +51,7 @@ public class PeerHandler extends Thread {
 
                     if (tx.verifySignature(senderKey)) {
                         System.out.println("Signature Verified (Valid). Broadcasting....");
-                        peerManager.broadcast(message, writer);
+                        node.processReceivedTransaction(tx, writer);
                     } else {
                         System.err.println("Signature Verification Failed (Invalid). Dropping Transaction.");
                     }

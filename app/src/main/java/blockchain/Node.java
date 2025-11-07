@@ -1,9 +1,12 @@
 package blockchain;
 
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.security.PublicKey;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArraySet;
 
 import com.google.gson.Gson;
 
@@ -12,6 +15,8 @@ public class Node {
     private PeerManager peerManager;
     private Wallet wallet;
     private Gson gson;
+
+    private Set<String> mempool = new CopyOnWriteArraySet<>();
 
     public Node(int port) { 
         this.port = port; 
@@ -47,6 +52,18 @@ public class Node {
         }
     }
 
+    public void processReceivedTransaction(Transaction tx, PrintWriter originator) {
+        String txID = tx.getTransactionID();
+        if(mempool.contains(txID)) {
+            System.out.println("Already processed transaction: " + txID);
+            return;
+        }
+        mempool.add(txID);
+        System.out.println("Added to mempool: " + txID);
+        String txJson = gson.toJson(tx);
+        peerManager.broadcast(txJson, originator);
+    }
+
     public void createAndBroadcastTransaction(String recipientAddress, String data) {
         Transaction tx = new Transaction(
             this.wallet.getPublicKey(),
@@ -58,8 +75,13 @@ public class Node {
 
         System.out.println("Create & Signed Transaction: " + tx.toString());
 
-        String txJson = gson.toJson(tx);
-        peerManager.broadcast(txJson, null);
+        if(mempool.add(tx.getTransactionID())) {
+            String txJson = gson.toJson(tx);
+            peerManager.broadcast(txJson, null);
+        } else {
+            System.out.println("Transaction already exists.");
+        }
+        
     }
 
     public PublicKey getPublicKey() { return this.wallet.getPublicKey(); }

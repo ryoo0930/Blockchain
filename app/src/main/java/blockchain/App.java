@@ -34,10 +34,21 @@ public class App {
                 } catch (Exception e) {
                     System.err.println("Usage: connect <host> <port>");
                 }
-            } else {
-                node.broadcastFromLocal(input);
-            }
+            } else if (input.startsWith("send ")) {
+                try {
+                    String[] parts = input.split(" ", 3);
+                    String recipientKey = parts[1];
+                    String data = parts[2];
 
+                    node.createAndBroadcastTransaction(recipientKey, data);
+                } catch (Exception e) {
+                    System.err.println("Usage: send <recipient_key> <data>");
+                }
+            }
+            
+            else {
+                System.out.println("Unknown command. Usage: 'connect...' or 'send...");
+            }
             
         }
 

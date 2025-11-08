@@ -22,12 +22,12 @@ public class BlockHeader {
         return CryptoUtil.hashSHA256(dataToHash);
     }
 
-    public String getParentHsh() { return parentHash; }
+    public String getParentHash() { return parentHash; }
     public String getTransactionsRoot() { return transactionsRoot; }
     public long getTimestamp() { return timestamp; }
     public long getNumber() { return number; }
     public long getDifficulty() { return difficulty; }
     public long getNonce() { return nonce; }
 
-    public void setNonce() { this.nonce = nonce; }
+    public void setNonce(long nonce) { this.nonce = nonce; }
 }

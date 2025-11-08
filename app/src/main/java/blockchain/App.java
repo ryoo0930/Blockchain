@@ -18,7 +18,7 @@ public class App {
         Node node = new Node(port);
         node.startServer();
 
-        System.out.println("Type 'connect <host> <port>', 'send <PublicKey> <message>', or 'exit'");
+        System.out.println("Type 'connect <host> <port>', 'send <PublicKey> <message>', 'mine', 'chain' or 'exit'");
         String input;
         while((input = consoleReader.readLine()) != null) {
             if("exit".equalsIgnoreCase(input)) {
@@ -44,9 +44,11 @@ public class App {
                 } catch (Exception e) {
                     System.err.println("Usage: send <recipient_key> <data>");
                 }
-            }
-            
-            else {
+            } else if (input.equalsIgnoreCase("mine")) {
+                node.startMining();
+            } else if (input.equalsIgnoreCase("chain")) {
+                System.out.println(node.getBlockchain().toString());
+            } else {
                 System.out.println("Unknown command. Usage: 'connect...' or 'send...");
             }
             

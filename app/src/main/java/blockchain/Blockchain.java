@@ -18,7 +18,9 @@ public class Blockchain {
     }
 
     private void createGenesisBlock() {
-        BlockHeader genesisHeader = new BlockHeader("0", CryptoUtil.hashSHA256(""), System.currentTimeMillis(), 0, DIFFICULTY, 0);
+        long genesisTimestamp = 1678886400000L;
+
+        BlockHeader genesisHeader = new BlockHeader("0", CryptoUtil.hashSHA256(""), genesisTimestamp, 0, DIFFICULTY, 0);
         Block genesisBlock = new Block(genesisHeader, new ArrayList<>());
         this.chain.add(genesisBlock);
     }

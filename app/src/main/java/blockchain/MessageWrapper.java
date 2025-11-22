@@ -2,8 +2,10 @@ package blockchain;
 
 public class MessageWrapper {
     public enum MessageType {
-        TX, // Transaction
-        BLOCK // Block
+        TX,         // Transaction
+        BLOCK,      // Single Block
+        GET_CHAIN,  // Request for the full blockchain
+        REPLY_CHAIN // Response with the full blockchain
     }
 
     public MessageType type;

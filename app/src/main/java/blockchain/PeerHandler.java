@@ -5,18 +5,23 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
-import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
+import java.security.KeyFactory;
 import java.util.Base64;
+import java.util.List;
+import java.util.logging.Logger;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
+import com.google.gson.reflect.TypeToken;
+import java.lang.reflect.Type;
 
 import blockchain.MessageWrapper.MessageType;
 
 public class PeerHandler extends Thread {
     private Socket socket;
+    private Node parentNode;
     private PeerManager peerManager;
     private PrintWriter writer;
     private Gson gson;
@@ -24,8 +29,9 @@ public class PeerHandler extends Thread {
     private Blockchain blockchain;
     private Mempool mempool;
 
-    public PeerHandler(Socket socket, PeerManager peerManager, Gson gson, Blockchain blockchain, Mempool mempool) {
+    public PeerHandler(Socket socket, Node parentNode, PeerManager peerManager, Gson gson, Blockchain blockchain, Mempool mempool) {
         this.socket = socket;
+        this.parentNode = parentNode;
         this.peerManager = peerManager;
         this.gson = gson;
         this.blockchain = blockchain;
@@ -36,19 +42,13 @@ public class PeerHandler extends Thread {
         try {
             writer = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
             peerManager.addPeer(writer);
-            System.out.println("New peer added: " + socket.getRemoteSocketAddress());
 
             String message;
             while((message = reader.readLine()) != null){
                 try {
                     MessageWrapper wrapper = gson.fromJson(message, MessageWrapper.class);
-
-                    if(wrapper == null || wrapper.type == null) {
-                        System.err.println("Received invalid message format.");
-                        continue;
-                    }
+                    if(wrapper == null || wrapper.type == null) continue;
 
                     switch (wrapper.type) {
                         case TX:
@@ -57,71 +57,91 @@ public class PeerHandler extends Thread {
                         case BLOCK:
                             handleBlock(wrapper.jsonData);
                             break;
+                        case GET_CHAIN:
+                            handleGetChain();
+                            break;
+                        case REPLY_CHAIN:
+                            handleReplyChain(wrapper.jsonData);
+                            break;
                     }
                 } catch (JsonSyntaxException e) {
-                    System.err.println("Not a valid JSON Message: " + message.substring(0, Math.min(message.length(), 50)));
+                    // Ignore invalid JSON
                 } catch (Exception e) {
-                    System.err.println("Error processing message " + e.getMessage());
+                    parentNode.addHistory("ERR: Msg processing failed.");
                 }
-
             }
         } catch (IOException e) {
-            System.out.println("Peer disconnected: " + socket.getRemoteSocketAddress());
+            // Peer disconnected
         } finally {
-            if (writer != null) {
-                peerManager.removePeer(writer);
-            }
-            try {
-                socket.close();
-            } catch (IOException e) {
-                System.out.println("Socket closed failed.");
-            }
+            if (writer != null) peerManager.removePeer(writer);
+            try { socket.close(); } catch (IOException e) { /* ignore */ }
         }
     }
 
     private void handleTransaction(String txJson) {
         try {
             Transaction tx = gson.fromJson(txJson, Transaction.class);
-            if(tx == null || tx.getSenderPublicKey() == null || tx.getSignature() == null) {
-                System.err.println("Invalid TX format received.");
-                return;
-            }
+            if(tx == null || tx.getSenderPublicKey() == null || tx.getSignature() == null) return;
 
             PublicKey senderKey = getPublicKeyFromString(tx.getSenderPublicKey());
-            if(tx.verifySignature(senderKey)) {
-                if(mempool.addTransaction(tx)) {
-                    System.out.println("PeerHandler: Verified TX added to mempool. Broadcasting...");
-                    MessageWrapper msg = new MessageWrapper(MessageWrapper.MessageType.TX, txJson);
-                    peerManager.broadcast(gson.toJson(msg), writer);                    } else {
-                        System.out.println("PeerHandler: Received duplicate TX. Ignoring.");
-                    }
-                } else {
-                    System.err.println("PeerHandler: Signautre Verification failed. Dropping TX");
+            if(tx.verifySignature(senderKey) && mempool.addTransaction(tx)) {
+                parentNode.addHistory("Received TX: " + tx.getTransactionID().substring(0, 10) + "...");
+                MessageWrapper msg = new MessageWrapper(MessageType.TX, txJson);
+                peerManager.broadcast(gson.toJson(msg), writer);
             }
         } catch (Exception e) {
-            System.err.println("Error handling transaction: " + e.getMessage());
+            parentNode.addHistory("ERR: TX handling failed.");
         }
     }
 
     private void handleBlock(String blockJson) {
         try {
             Block block = gson.fromJson(blockJson, Block.class);
-            System.out.println("PeerHandler: Received new block #" + block.getHeader().getNumber());
-
-            
             if (blockchain.addBlock(block)) {
-                System.out.println("PeerHandler: Block is valid and added to chain. Broadcasting...");
-                
+                parentNode.addHistory("Added Block #" + block.getHeader().getNumber());
                 mempool.removeTransactions(block.getTransactions());
-
-                MessageWrapper msg = new MessageWrapper(MessageWrapper.MessageType.BLOCK, blockJson);
+                MessageWrapper msg = new MessageWrapper(MessageType.BLOCK, blockJson);
                 peerManager.broadcast(gson.toJson(msg), writer);
+                parentNode.notifyStateChanged(); // 상태 변경 알림
             } else {
-                System.out.println("PeerHandler: Received invalid block or old block. Ignoring.");
+                // 내 체인에 붙일 수 없다면, 체인 동기화 요청
+                Logger.getLogger(PeerHandler.class.getName()).info("[Node " + parentNode.getPort() + "] Fork detected. Requesting chain sync...");
+                sendMessage(MessageType.GET_CHAIN, "");
             }
         } catch (Exception e) {
-            System.err.println("Error handling block: " + e.getMessage());
+            parentNode.addHistory("ERR: Block handling failed.");
         }
+    }
+
+    private void handleGetChain() {
+        parentNode.addHistory("Chain request received. Replying...");
+        String chainJson = gson.toJson(blockchain.getChain());
+        sendMessage(MessageType.REPLY_CHAIN, chainJson);
+    }
+
+    private void handleReplyChain(String chainJson) {
+        try {
+            Type blockListType = new TypeToken<List<Block>>() {}.getType();
+            List<Block> newChain = gson.fromJson(chainJson, blockListType);
+            if (blockchain.replaceChain(newChain)) {
+                parentNode.addHistory("Chain synchronized successfully.");
+                for (Block block : newChain) {
+                    mempool.removeTransactions(block.getTransactions());
+                }
+                MessageWrapper msg = new MessageWrapper(MessageType.REPLY_CHAIN, chainJson);
+                peerManager.broadcast(gson.toJson(msg), writer);
+                parentNode.notifyStateChanged(); // 상태 변경 알림
+            } else {
+                parentNode.addHistory("Received chain is not longer/valid.");
+            }
+        } catch (Exception e) {
+            parentNode.addHistory("ERR: Chain sync failed.");
+        }
+    }
+
+    private void sendMessage(MessageType type, String jsonData) {
+        String message = gson.toJson(new MessageWrapper(type, jsonData));
+        writer.println(message);
     }
 
     private PublicKey getPublicKeyFromString(String keySting) {
@@ -134,5 +154,4 @@ public class PeerHandler extends Thread {
             throw new RuntimeException("PublicKey Restore Failed.");
         }
     }
-
 }

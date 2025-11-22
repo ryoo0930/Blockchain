@@ -13,6 +13,10 @@ import com.google.gson.Gson;
 
 import blockchain.MessageWrapper.MessageType;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
 public class Node {
     private int port;
     private PeerManager peerManager;
@@ -21,6 +25,11 @@ public class Node {
 
     private Blockchain blockchain;
     private Mempool mempool;
+    private List<String> history;
+    private List<Node> peers;
+    private volatile boolean isMining = false;
+    private Thread miningThread;
+    private NodeStateListener listener;
 
     public Node(int port) { 
         this.port = port; 
@@ -30,32 +39,63 @@ public class Node {
 
         this.blockchain = new Blockchain();
         this.mempool = new Mempool();
+        this.history = new CopyOnWriteArrayList<>();
+        this.peers = new CopyOnWriteArrayList<>();
+    }
 
-        System.out.println("Node Wallet Address (PublicKey): " + CryptoUtil.keyToString(wallet.getPublicKey()));
+    public void setListener(NodeStateListener listener) {
+        this.listener = listener;
+    }
+
+    public void notifyStateChanged() {
+        if (listener != null) {
+            listener.onStateChanged();
+        }
+    }
+
+    public boolean isMining() {
+        return isMining;
+    }
+
+    public void addHistory(String event) {
+        this.history.add(event);
+        if (this.history.size() > 50) {
+            this.history.remove(0);
+        }
+        notifyStateChanged(); // 히스토리가 변경될 때도 UI 업데이트
+    }
+
+    public List<String> getHistory() {
+        return history;
+    }
+
+    public void addPeer(Node peer) {
+        this.peers.add(peer);
+    }
+
+    public List<Node> getPeers() {
+        return peers;
     }
 
     public void startServer() {
         new Thread(() -> {
             try (ServerSocket serverSocket = new ServerSocket(port)) {
-                System.out.println("P2P Node listening on port: " + port);
                 while(true) {
                     Socket clienSocket = serverSocket.accept();
-                    new PeerHandler(clienSocket, peerManager, gson, blockchain, mempool).start();
+                    new PeerHandler(clienSocket, this, peerManager, gson, blockchain, mempool).start();
                 }
             } catch (IOException e) {
-                System.err.println("Server Error: " + e.getMessage());
+                System.err.println("[Node:" + port + "] Server Error: " + e.getMessage());
             }
         }).start();
     }
 
-    public void connectToPeer(String host, int port) {
+    public void connectToPeer(String host, int peerPort) {
         try {
-            Socket socket = new Socket(host, port);
-            System.out.println("Connected to peer: " + host + ":" + port);
-
-            new PeerHandler(socket, peerManager, gson, blockchain, mempool).start();
+            Socket socket = new Socket(host, peerPort);
+            new PeerHandler(socket, this, peerManager, gson, blockchain, mempool).start();
         } catch (IOException e) {
-            System.err.println("Connected Failed: " + e.getMessage());
+            // Connection failures are common, so no error log needed
         }
     }
 
@@ -65,64 +105,72 @@ public class Node {
             recipientAddress,
             data
         );
-
         tx.signTransaction(this.wallet.getPrivateKey());
 
-        System.out.println("Create & Signed Transaction: " + tx.toString());
-
         if(mempool.addTransaction(tx)) {
-            System.out.println("Created & Signed TX: " + tx.toString().substring(0, 40));
+            // addHistory("Broadcasted TX: " + tx.getTransactionID().substring(0, 10) + "...");
             String txJson = gson.toJson(tx);
             MessageWrapper msg = new MessageWrapper(MessageWrapper.MessageType.TX, txJson);
             peerManager.broadcast(gson.toJson(msg), null);
-        } else {
-            System.out.println("Transaction already exists.");
         }
-        
     }
 
     public void startMining() {
-        System.out.println("MINER: Starting Miner Thread...");
-
-        new Thread(() -> {
-            while(true) {
+        if (this.isMining) {
+            addHistory("Miner is already running.");
+            return;
+        }
+        this.isMining = true;
+        this.miningThread = new Thread(() -> {
+            addHistory("Miner Started.");
+            while(this.isMining) {
                 Block parentBlock = blockchain.getLastBlock();
-                String parentHash = parentBlock.getHash();
                 long newBlockNumber = parentBlock.getHeader().getNumber() + 1;
-                long difficulty = blockchain.getDifficulty();
-                String difficultyTarget = blockchain.getDifficultyTarget();
-
+                
                 List<Transaction> txs = mempool.getTransactionsForBlock(10);
                 String txRoot = MerkleTree.getMerkleRoot(txs);
                 long timestamp = System.currentTimeMillis();
-
                 long nonce = 0;
-                BlockHeader newHeader = new BlockHeader(parentHash, txRoot, timestamp, newBlockNumber, difficulty, nonce);
+                BlockHeader newHeader = new BlockHeader(parentBlock.getHash(), txRoot, timestamp, newBlockNumber, blockchain.getDifficulty(), nonce);
 
-                System.out.println("MINER: Mining new block #" + newBlockNumber + " (Parent: " + parentHash.substring(0, 6) + ")...");
+                while(this.isMining) {
+                    if (blockchain.getLastBlock().getHeader().getNumber() >= newBlockNumber) {
+                        break; 
+                    }
 
-                while(true) {
                     newHeader.setNonce(nonce);
                     String hash = newHeader.calculateHash();
 
-                    if(hash.startsWith(difficultyTarget)) {
-                        System.out.println("MINER: BLOCK MINED! Nonce=" + nonce + ", Hash=" + hash);
-
+                    if(hash.startsWith(blockchain.getDifficultyTarget())) {
                         Block newBlock = new Block(newHeader, txs);
 
                         if(blockchain.addBlock(newBlock)) {
+                            addHistory("MINED Block #" + newBlock.getHeader().getNumber());
                             String blockJson = gson.toJson(newBlock);
                             MessageWrapper msg = new MessageWrapper(MessageWrapper.MessageType.BLOCK, blockJson);
                             peerManager.broadcast(gson.toJson(msg), null);
                         } else {
-                            System.err.println("\"MINER: Mined block was invalid? (Race condition, fork?)");
+                            addHistory("Discarded own Block #" + newBlock.getHeader().getNumber());
                         }
-                        break;
-                    } nonce++;
-                } // end of PoW loop
-            } // end of mining loop
-        }).start();
+                        break; 
+                    } 
+                    nonce++;
+                }
+                
+                try { 
+                    Thread.sleep(100);
+                } catch (InterruptedException e) { 
+                    // This allows stopping the thread gracefully
+                    Thread.currentThread().interrupt(); 
+                }
+            } 
+            addHistory("Miner Stopped.");
+        });
+        this.miningThread.start();
     }
     
     public Blockchain getBlockchain() { return blockchain; }
+    public void setBlockchain(Blockchain blockchain) { this.blockchain = blockchain; }
+    public int getPort() { return port; }
+    public Wallet getWallet() { return wallet; }
 }
